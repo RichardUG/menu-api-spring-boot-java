@@ -1,134 +1,607 @@
-# Auth0 Code Sample: Spring Boot + Java Menu API
+# IMPLEMENTING JWT AUTHENTICATION ON SPRING BOOT
 
-This projects presents you with a feature-complete Spring Boot API built with Java. You can test your API locally using terminal commands. Additionally, you can use a live client application, the ["WHATABYTE Dashboard"](https://dashboard.whatabyte.app/), as a testing harness to simulate production conditions and live user interactions.
+## Descripción
 
-![WHATBYTE Dashboard demo client](https://cdn.auth0.com/blog/whatabyte-dashboard-demo-client/anon-menu-page.png)
+El proyecto consta de aprender como proteger una aplicación con autenticación y autorización a traves de Auth0 y JWT de springboot para restringir el acceso a un sistema y a la vez poder limitar las acciones que un usuario autenticado puede hacer dentro de un sistema
 
-> The [sleek web player from Spotify](https://open.spotify.com/search) inspired the design of the live demo application.
+Este proyecto lo hacemos gracias a la guia que se encuentra publicada en [Spring Boot Authorization Tutorial: Secure an API (Java)](https://auth0.com/blog/spring-boot-authorization-tutorial-secure-an-api-java/) y al repositorio que habian trabajado con anterioridad que esta en [menu-api-spring-boot-java](menu-api-spring-boot-java)
 
-For **simplicity**, the API stores data in-memory and not in an external database. However, you can connect its data service to any database of your liking.
+## Prerrequisitos
 
-You can read [Java and Spring Boot CRUD API Tutorial](https://auth0.com/blog/spring-boot-java-crud-api-tutorial/) to learn how to build this API.
+* Descargar el repositorio con el que se va a trabajar el laboratorio - [menu-api-spring-boot-java](menu-api-spring-boot-java)
+* Crear una cuenta en [Auth0](https://auth0.com/signup)
 
-For **security**, you should limit API access by following these business rules:
+## Creando nuestro ambiente
 
-- Anyone can read data.
+  Vamos a crear una nueva API con nombre "Menu API" e identifier "https://menu-api.example.com"
+  
+  ![](/img/1.PNG)
 
-- Only authenticated users with a `menu-admin` role can create, update, or delete menu items. The `menu-admin` role will bundle the necessary permissions to execute these write operations.
+  Creamos una nueva aplicación de tipo Single Page Web Application con el nombre "WHATABYTE Demo Client" 
 
-You can learn more about how to secure this API by reading [Java and Spring Boot API Authorization Tutorial](https://auth0.com/blog/spring-boot-java-authorization-tutorial-secure-an-api/). 
+  ![](/img/2.PNG)
 
-## Get Started
+  Agregamos lo siguiente a nuestra application.properties
 
-Clone the project in a directory called `menu-api` and checkout its `build-api` branch:
+  ```
+  server.port=7000
+  auth0.audience=
+  auth0.domain=
+  spring.security.oauth2.resourceserver.jwt.issuer-uri=https://${auth0.domain}/
+  ```
+  
+  a audience le agregamos el valor de identifier que encontramos en el setting de nuestra API y al domain le agregamos el domain que podemos observa en las pruebas 
 
-```bash
-git clone git@github.com:auth0-blog/menu-api-spring-boot-java.git \
-menu-api \
---branch build-api
-```
+  ![](/img/36.PNG)
 
-Make the project folder your current directory:
+## Spring Boot and authorization
 
-```bash
-cd menu-api
-```
+  Después agregamos el jwt a nuestro proyecto a través de las dependencias de gradle
 
-Then, install the project dependencies using Gradle:
+  ```gradle
+  implementation 'org.springframework.boot:spring-boot-starter-security'
+  implementation 'org.springframework.security:spring-security-oauth2-resource-server'
+  implementation 'org.springframework.security:spring-security-oauth2-jose'
+  ```
 
-```bash
-./gradlew --refresh-dependencies
-```
+  Creamos un paquete llamado Security y en él una clase llamada SecurityConfig con el siguiente código que se encargara de habilitar la seguridad web al proyecto
 
-Finally, open the `application.properties` file in `src/main/resources` and add:
+  ```java
+  package com.example.menu.security;
 
-```bash
-server.port=7000
-```
+  import org.springframework.http.HttpMethod;
+  import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+  import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+  import org.springframework.security.config.annotation.web.configuration.WebSecurityConfigurerAdapter;
+  
+  @EnableWebSecurity
+  public class SecurityConfig extends WebSecurityConfigurerAdapter {
+     @Override
+     protected void configure(HttpSecurity http) throws Exception {
+        http.authorizeRequests()
+        .mvcMatchers(HttpMethod.GET, "/api/menu/items/**").permitAll() // GET requests don't need auth
+        .anyRequest()
+        .authenticated()
+        .and()
+        .oauth2ResourceServer()
+        .jwt();
+     }
+  }
+  ```
+  
+  ahora creamos una nueva clase llamada AudienceValidator que se encargara de validar que tokens son validos para permitir el acceso
 
-Run the project by executing the following command:
+  ```java
+  package com.example.menu.security;
 
-```bash
-./gradlew bootRun
-```
+  import org.springframework.security.oauth2.core.OAuth2Error;
+  import org.springframework.security.oauth2.core.OAuth2ErrorCodes;
+  import org.springframework.security.oauth2.core.OAuth2TokenValidator;
+  import org.springframework.security.oauth2.core.OAuth2TokenValidatorResult;
+  import org.springframework.security.oauth2.jwt.Jwt;
+  
+  import java.util.List;
+  import java.util.Objects;
+  
+  class AudienceValidator implements OAuth2TokenValidator<Jwt> {
+    private final String audience;
+  
+    AudienceValidator(String audience) {
+        Assert.hasText(audience, "audience is null or empty");
+        this.audience = audience;
+    }
+  
+    public OAuth2TokenValidatorResult validate(Jwt jwt) {
+        List<String> audiences = jwt.getAudience();
+        if (audiences.contains(this.audience)) {
+            return OAuth2TokenValidatorResult.success();
+        }
+        OAuth2Error err = new OAuth2Error(OAuth2ErrorCodes.INVALID_TOKEN);
+        return OAuth2TokenValidatorResult.failure(err);
+    }
+  }
+  ```
+  
+  Ahora que creamos el validador de los tokens debemos agrgar lo siguiente a nuestra clase SecurityConfig para que decifre y envie a validar los tokens que se obtienen
 
-## Test the API with the Demo Client
+  ```java
+  package com.example.menu.security;
 
-You can use a demo application, the [WHATABYTE Dashboard](https://dashboard.whatabyte.app/home), to interact with your Menu API like any user would. The demo application lets you enable and disable its authentication features.
- 
-Since you have not yet implemented authorization in your API to protect your endpoints, you'll use the demo client without any authentication features, which allows you to perform read and write operations on your Menu API as an anonymous user.
+  import org.springframework.beans.factory.annotation.Value;
+  import org.springframework.http.HttpMethod;
+  import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+  import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+  import org.springframework.security.config.annotation.web.configuration.WebSecurityConfigurerAdapter;
+  import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
+  import org.springframework.security.oauth2.core.OAuth2TokenValidator;
+  import org.springframework.security.oauth2.jwt.*;
+  
+  @EnableWebSecurity
+  public class SecurityConfig extends WebSecurityConfigurerAdapter {
+    @Value("${auth0.audience}")
+    private String audience;
+  
+    @Value("${spring.security.oauth2.resourceserver.jwt.issuer-uri}")
+    private String issuer;
+  
+    @Override
+    protected void configure(HttpSecurity http) throws Exception {
+        http.authorizeRequests()
+        .mvcMatchers(HttpMethod.GET, "/api/menu/items/**").permitAll() // GET requests don't need auth
+        .anyRequest()
+        .authenticated()
+        .and()
+        .oauth2ResourceServer()
+        .jwt()
+        .decoder(jwtDecoder());
+    }
+  
+    JwtDecoder jwtDecoder() {
+      OAuth2TokenValidator<Jwt> withAudience = new AudienceValidator(audience);
+      OAuth2TokenValidator<Jwt> withIssuer = JwtValidators.createDefaultWithIssuer(issuer);
+      OAuth2TokenValidator<Jwt> validator = new DelegatingOAuth2TokenValidator<>(withAudience, withIssuer);
+  
+      NimbusJwtDecoder jwtDecoder = (NimbusJwtDecoder) JwtDecoders.fromOidcIssuerLocation(issuer);
+      jwtDecoder.setJwtValidator(validator);
+      return jwtDecoder;
+    }
+  }
+  ```
+  ejecutamos nuevamente nuestra aplicación con ```./gradlew bootRun``` y probamos enviando una petición POST a través de POSTMAN que nos retorna un error 401 ya que no estamos autorizados
 
-### Set up the demo client application
+  ![](/img/3.PNG)
 
-Head to [https://dashboard.whatabyte.app](https://dashboard.whatabyte.app) to open the demo client. If this is your first time using this client application, the _Auth0 Demo Settings_ view will open up.
 
-Under the **"Auth0 Demo Settings"** view, ensure that the **Enable Authentication Features** option is off:
+## Registramos nuestro cliente con la aplicación Auth0
+  
+  Ahora nos dirigimos a [https://dashboard.whatabyte.app/](https://dashboard.whatabyte.app/) y editamos los valore Domain y Client ID con los valores que nos brinda la aplicación que creamos en su pestaña de settings, Auth0 API Audience será https://menu-api.example.com y Auth0 Callback URL es https://dashboard.whatabyte.app/home
 
-![Dashboard demo settings without authentication](https://cdn.auth0.com/blog/whatabyte-dashboard-demo-client/auth0-demo-settings-authentication-features-off.png)
+  ![](/img/4.PNG)
 
-You should have a form with one field labeled **API Server Base URL** under its **API Configuration** section. The value of this field corresponds to your Spring Boot server base URL, in this case, `http://localhost:7000`.
+  y trás guardar las configuraciones podremos ver nuestro dashboard 
 
-> If you are using any other base URL for your server, change the value of the form field.
+  ![](/img/5.PNG)
 
-Now, click the **Save** button to load the demo client application:
+  Ahora cuál vamos a modificar los settings de la aplicación que creamos y la vamos a dejar del siguiente modo
 
-![Dashboard home page](https://cdn.auth0.com/blog/whatabyte-dashboard-demo-client/anon-home-page.png)
+  ![](/img/6.PNG)
 
-Locate the navigation bar on the left side of the page. Then, click on the **Menu** tab. Three menu items from your server's store should load up:
 
-![Dashboard menu page](https://cdn.auth0.com/blog/whatabyte-dashboard-demo-client/anon-menu-page.png)
+## Habilitar CORS de Spring Boot
 
-### Create an item
+  Debemos habilitar los CORS para que nuestro API pueda recibir las consultas externas debido a la seguridad que hemos implementado, por lo cual vamos a agregar lo siguiente al código
 
-On the **"Menu Items"** page, click on the **Add Item** button on the top-right corner. The **"Add Menu Item"** page should load up with a pre-populated form:
+  ```java
+  package com.example.menu.security;
+  
+  import org.springframework.beans.factory.annotation.Value;
+  import org.springframework.http.HttpMethod;
+  import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+  import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+  import org.springframework.security.config.annotation.web.configuration.WebSecurityConfigurerAdapter;
+  import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
+  import org.springframework.security.oauth2.core.OAuth2TokenValidator;
+  import org.springframework.security.oauth2.jwt.*;
+  import org.springframework.web.cors.CorsConfiguration;
+  import org.springframework.web.cors.CorsConfigurationSource;
+  import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+  
+  import java.util.List;
+  
+  @EnableWebSecurity
+  public class SecurityConfig extends WebSecurityConfigurerAdapter {
+  @Value("${auth0.audience}")
+  private String audience;
 
-![Page to add a menu item](https://cdn.auth0.com/blog/whatabyte-dashboard-demo-client/anon-create-item-salad.png)
+    @Value("${spring.security.oauth2.resourceserver.jwt.issuer-uri}")
+    private String issuer;
 
-Click on the **Save** button to add a "Spring Salad" item to your menu.
+    @Override
+    protected void configure(HttpSecurity http) throws Exception {
+        http.authorizeRequests()
+                .mvcMatchers(HttpMethod.GET, "/api/menu/items/**").permitAll() // GET requests don't need auth
+                .anyRequest()
+                .authenticated()
+                .and()
+                .cors()
+                .configurationSource(corsConfigurationSource())
+                .and()
+                .oauth2ResourceServer()
+                .jwt()
+                .decoder(jwtDecoder());
+    }
 
-Once the request-response cycle is complete between the client and the server, the client application loads the "Menu Items" page again. The menu grid now features four items, which includes the "Spring Salad":
+    CorsConfigurationSource corsConfigurationSource() {
+        CorsConfiguration configuration = new CorsConfiguration();
+        configuration.setAllowedMethods(List.of(
+                HttpMethod.GET.name(),
+                HttpMethod.PUT.name(),
+                HttpMethod.POST.name(),
+                HttpMethod.DELETE.name()
+        ));
 
-![Menu page showing new item](https://cdn.auth0.com/blog/whatabyte-dashboard-demo-client/anon-add-item-success-salad.png)
+        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        source.registerCorsConfiguration("/**", configuration.applyPermitDefaultValues());
+        return source;
+    }
 
-### Update an item
+    JwtDecoder jwtDecoder() {
+        OAuth2TokenValidator<Jwt> withAudience = new AudienceValidator(audience);
+        OAuth2TokenValidator<Jwt> withIssuer = JwtValidators.createDefaultWithIssuer(issuer);
+        OAuth2TokenValidator<Jwt> validator = new DelegatingOAuth2TokenValidator<>(withAudience, withIssuer);
 
-Now, try updating the property of an item. Click on the "Tea" item to load its item page:
+        NimbusJwtDecoder jwtDecoder = (NimbusJwtDecoder) JwtDecoders.fromOidcIssuerLocation(issuer);
+        jwtDecoder.setJwtValidator(validator);
+        return jwtDecoder;
+    }
+  }
+  ```
 
-![Tea menu item page](https://cdn.auth0.com/blog/whatabyte-dashboard-demo-client/anon-menu-item-page-tea.png)
+  Y ya que hemos asociado nuestra aplicación no necesitamos más tener un cross origin por lo cual podemos borrrar la siguiente linea de la clase "ItemsController"
 
-You'll notice two buttons at the bottom: **Edit** and **Delete**. 
+  ```
+  @CrossOrigin(origins = "https://dashboard.whatabyte.app")
+  ```
 
-Click the **Edit** button and modify the form that loads up:
+## Sign in
 
-- Change the **Name** value from "Tea" to "Ginger Tea".
-- Change the **Description**  value from "Informative" to "Energizing".
+  Tras esto nos podremos registrar, en mi caso lo registré de manera manual con usuario y contraseña
 
-![Page to edit the tea item](https://cdn.auth0.com/blog/whatabyte-dashboard-demo-client/anon-edit-menu-item.png)
+  ![](/img/7.PNG)
 
-Then, click the **Save** button. Once the request-response cycle completes again, you'll see four items in the menu grid. However, the "Tea" item will show its new name and description:
+  Al acceder podremos ver nuestro perfil
 
-![Updated menu item page](https://cdn.auth0.com/blog/whatabyte-dashboard-demo-client/anon-edit-item-success-tea.png)
+  ![](/img/8.PNG)
 
-### Delete an item
+  En este punto somos capaces de hacer cualquier operación CRUD en la plataforma
 
-Click on any item on the menu grid, such as the "Spring Salad". On the item page, click its **Delete** button. You'll load up the **"Delete Menu Item"** page, asking you to confirm if you what to delete the item:
+## Probando la protección del end point
 
-![Page to delete the salad item](https://cdn.auth0.com/blog/whatabyte-dashboard-demo-client/anon-delete-menu-item-salad.png)
+  Saldremos de la sesión y deshabilitaremos los parametros de autenticación 
 
-Click the **Delete** button to confirm the operation. After the request-response cycle completes, the menu grid loads up without that particular item:
+  ![](/img/9.PNG)
 
-![Menu page without the deleted item](https://cdn.auth0.com/blog/whatabyte-dashboard-demo-client/anon-delete-item-success-salad.png)
+  Ahora ingresaremos otra vez y al intentar agregar un nuevo elemento no lo podremos hacer
 
-## Security Considerations
+  ![](/img/11.PNG)
 
-You can protect this API against unauthorized access by using Auth0.
+  Del mismo modo sí intentamos editar o eliminar un elemento ya existente
 
-Auth0 is a flexible, drop-in solution to add authentication and authorization services to your applications. Your team and organization can avoid the cost, time, and risk that comes with building your solution to authenticate and authorize users. Auth0 offers tons of guidance and SDKs for you to get started and integrate Auth0 in your stack easily.
+  ![](/img/12.PNG)
 
-As it is, anyone could use the client application to perform write operations. Someone could delete all the menu items:
+  Ahora volveremos a ajustar nuestros parametros de Authentication Features
 
-![Empty menu page](https://cdn.auth0.com/blog/whatabyte-dashboard-demo-client/anon-menu-page-empty.png)
+## Configure Role-Based Access Control (RBAC)
 
-To prevent such a data catastrophe from happening, you need to secure your write endpoints by implementing authorization on the API layer. Once your Menu API has authorization in place, you can enable the authentication features of the demo client to improve the UX of the end-users.
+  Lo primero que debemos hacer es habilitar las opciones "Enable RBAC" y "Add permisions in the access token" en los settings de la API que creamos
 
-You can follow [Java and Spring Boot API Authorization Tutorial](https://auth0.com/blog/spring-boot-java-authorization-tutorial-secure-an-api/) to implement authorization in your API. You'll require users to log in to perform write operations on the API. Additionally, you'll further increase your API's security by requiring users to have a set of permissions (defined through a role) to perform any write operation.
+  ![](/img/14.PNG)
+
+  Ahora agregaremos los permisos necesarios a nuestra API
+
+  ![](/img/13.PNG)
+
+  Después crearemos un nuevo Rol llamado "menu-admin"
+
+  ![](/img/15.PNG)
+
+  Y despues le agregaremos los permisos de nuestra API a nuestro ROL
+
+  ![](/img/16.PNG)
+
+  Lo veremos del siguiente modo
+
+  ![](/img/26.PNG)
+
+## Creación de una acción
+
+  En el tutorial nos mostraba que debiamos crear una regla que se ejecutaria tras un login exitoso, pero estas reglas ya no funcionan mas en la versión actual de auth, por lo cual debemos crear una acción
+
+  Nos vamos a dirigir al menu actions -> Library 
+
+  ![](/img/24.PNG)
+
+  Después vamos a oprimir la opción Build Custom y a esta acción le vamos a dar el nombre de "Add user roles to tokens" como un Trigger de tipo "Login / Post Login"
+
+  ![](/img/25.PNG)
+
+  Tras ingresar tendremos que cambiar el código que nos brindaban en el tutorial, el codigo es el que esta a continuación y sirve para que cuando un login es exitoso valide los roles del usuario y en caso de ser de tipo admin le proporcione los permisos necesarios
+
+  ```jshelllanguage
+  /**
+  * Handler that will be called during the execution of a PostLogin flow.
+  *
+  * @param {Event} event - Details about the user and the context in which they are logging in.
+  * @param {PostLoginAPI} api - Interface whose methods can be used to change the behavior of the login.
+  */
+  exports.onExecutePostLogin = async (event, api) => {
+    authorize(event, api,function(err, result) {
+      return result;   
+    })
+  };
+  
+  function authorize(event, api, callback) {
+    
+    const namespace = 'https://menu-api.example.com';
+    
+    const promise = new Promise(()=>{
+        if (event.authorization && event.authorization.roles) {
+          const assignedRoles = event.authorization.roles;
+          if (api.idToken) {
+            api.idToken.setCustomClaim(`${namespace}/roles`, assignedRoles);
+          }
+          if (api.accessToken) {
+            api.accessToken.setCustomClaim(`${namespace}/roles`, assignedRoles);
+          }    
+        }
+      }
+    );
+    promise.then(callback(null, event, api));
+  }
+  
+  /**
+  * Handler that will be invoked when this action is resuming after an external redirect. If your
+  * onExecutePostLogin function does not perform a redirect, this function can be safely ignored.
+  *
+  * @param {Event} event - Details about the user and the context in which they are logging in.
+  * @param {PostLoginAPI} api - Interface whose methods can be used to change the behavior of the login.
+  */
+  // exports.onContinuePostLogin = async (event, api) => {
+  // };
+  ```
+
+  Guardaremos nuestra acción y después nos dirigiremos al menú Actions->Flows->Login y agregaremos nuestra acción
+  
+  ![](/img/18.PNG)
+
+  Después volveremos a nuestro menú de "Auth Demo Settings" y habilitaremos la opción RBAC y como Rol agregaremos "menu-admin"
+
+  ![](/img/19.PNG)
+
+  Ahora si ingresamos nuevamente no tendremos la opción de "Add item", "Edit" o "Delete" ya que nuestro usuario no esta asociado al rol de admin
+
+  ![](/img/20.PNG)
+
+  ![](/img/21.PNG)
+
+## Admin user
+
+  Ahora nos dirigiremos a crear  un nuevo usuario de tipo admin, con el correo "admin@example.com" y connection "Username-Password-Authentication"
+
+  ![](/img/22.PNG)
+
+  Luego iremos a el rol que habiamos creado y le agregaremos nuestro usuario admin
+  
+  ![](/img/23.PNG)
+
+  Al entrar con este usuario a la plataforma veremos nuestra opción de "ADD ITEM" nuevamente, crearemos el que esta por defecto
+
+  ![](/img/27.PNG)
+
+  ![](/img/28.PNG)
+
+  Y en la hamburguesa editaremos de "tasty" por "super tasty"
+
+  ![](/img/29.PNG)
+
+  ![](/img/30.PNG)
+
+  Podremos observar que los cambios se han guardado
+
+  ![](/img/31.PNG)
+
+## Implement Role-Based Access Control in Spring Boot
+
+  A pesar de que ya agregamos seguridad a nuestra aplicación Auth, aun es posible omitir esta autorización en nuestro proyecto, por lo cual debemos hacer algunos cambios
+
+  Primero editaremos nuestro archivo SecurityConfig para que reconozca los authorities a través del scope de la consulta
+
+  ```java
+  package com.example.menu.security;
+
+  import org.springframework.beans.factory.annotation.Value;
+  import org.springframework.http.HttpMethod;
+  import org.springframework.security.config.annotation.method.configuration.EnableGlobalMethodSecurity;
+  import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+  import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+  import org.springframework.security.config.annotation.web.configuration.WebSecurityConfigurerAdapter;
+  import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
+  import org.springframework.security.oauth2.core.OAuth2TokenValidator;
+  import org.springframework.security.oauth2.jwt.Jwt;
+  import org.springframework.security.oauth2.jwt.JwtDecoder;
+  import org.springframework.security.oauth2.jwt.JwtDecoders;
+  import org.springframework.security.oauth2.jwt.JwtValidators;
+  import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
+  import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
+  import org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter;
+  import org.springframework.web.cors.CorsConfiguration;
+  import org.springframework.web.cors.CorsConfigurationSource;
+  import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+  
+  import java.util.List;
+  
+  @EnableWebSecurity
+  @EnableGlobalMethodSecurity(prePostEnabled = true)
+  public class SecurityConfig extends WebSecurityConfigurerAdapter {
+    @Value("${auth0.audience}")
+    private String audience;
+  
+    @Value("${spring.security.oauth2.resourceserver.jwt.issuer-uri}")
+    private String issuer;
+  
+    @Override
+    protected void configure(HttpSecurity http) throws Exception {
+      http.authorizeRequests()
+              .mvcMatchers(HttpMethod.GET, "/api/menu/items/**").permitAll() // GET requests don't need auth
+              .anyRequest()
+              .authenticated()
+              .and()
+              .cors()
+              .configurationSource(corsConfigurationSource())
+              .and()
+              .oauth2ResourceServer()
+              .jwt()
+              .decoder(jwtDecoder())
+              .jwtAuthenticationConverter(jwtAuthenticationConverter());
+    }
+  
+    CorsConfigurationSource corsConfigurationSource() {
+      CorsConfiguration configuration = new CorsConfiguration();
+      configuration.setAllowedMethods(List.of(
+              HttpMethod.GET.name(),
+              HttpMethod.PUT.name(),
+              HttpMethod.POST.name(),
+              HttpMethod.DELETE.name()
+      ));
+  
+      UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+      source.registerCorsConfiguration("/**", configuration.applyPermitDefaultValues());
+      return source;
+    }
+  
+    JwtDecoder jwtDecoder() {
+      OAuth2TokenValidator<Jwt> withAudience = new AudienceValidator(audience);
+      OAuth2TokenValidator<Jwt> withIssuer = JwtValidators.createDefaultWithIssuer(issuer);
+      OAuth2TokenValidator<Jwt> validator = new DelegatingOAuth2TokenValidator<>(withAudience, withIssuer);
+  
+      NimbusJwtDecoder jwtDecoder = (NimbusJwtDecoder) JwtDecoders.fromOidcIssuerLocation(issuer);
+      jwtDecoder.setJwtValidator(validator);
+      return jwtDecoder;
+    }
+  
+    JwtAuthenticationConverter jwtAuthenticationConverter() {
+      JwtGrantedAuthoritiesConverter converter = new JwtGrantedAuthoritiesConverter();
+      converter.setAuthoritiesClaimName("permissions");
+      converter.setAuthorityPrefix("");
+  
+      JwtAuthenticationConverter jwtConverter = new JwtAuthenticationConverter();
+      jwtConverter.setJwtGrantedAuthoritiesConverter(converter);
+      return jwtConverter;
+    }
+  }
+  ```
+
+  Y luego en nuestro archivo ItemController agregaremos la etiqueta ```@PreAuthorize``` a aquellos end points que lo requieran, junto con su permiso
+
+  ```java
+  package com.example.menu.item;
+  
+  import org.springframework.http.ResponseEntity;
+  import org.springframework.security.access.prepost.PreAuthorize;
+  import org.springframework.validation.FieldError;
+  import org.springframework.validation.ObjectError;
+  import org.springframework.web.bind.MethodArgumentNotValidException;
+  import org.springframework.web.bind.annotation.*;
+  import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
+  
+  import javax.validation.Valid;
+  import java.net.URI;
+  import java.util.HashMap;
+  import java.util.List;
+  import java.util.Map;
+  import java.util.Optional;
+  @RestController
+  @RequestMapping("api/menu/items")
+  public class ItemController {
+    private final ItemService service;
+  
+    public ItemController(ItemService service) {
+      this.service = service;
+    }
+  
+    @GetMapping
+    public ResponseEntity<List<Item>> findAll() {
+      List<Item> items = service.findAll();
+      return ResponseEntity.ok().body(items);
+    }
+  
+    @GetMapping("/{id}")
+    public ResponseEntity<Item> find(@PathVariable("id") Long id) {
+      Optional<Item> item = service.find(id);
+      return ResponseEntity.of(item);
+    }
+  
+    @PostMapping
+    @PreAuthorize("hasAuthority('create:items')")
+    public ResponseEntity<Item> create(@Valid @RequestBody Item item) {
+      Item created = service.create(item);
+      URI location = ServletUriComponentsBuilder.fromCurrentRequest()
+              .path("/{id}")
+              .buildAndExpand(created.getId())
+              .toUri();
+      return ResponseEntity.created(location).body(created);
+    }
+  
+    @PutMapping("/{id}")
+    @PreAuthorize("hasAuthority('update:items')")
+    public ResponseEntity<Item> update(
+            @PathVariable("id") Long id,
+            @Valid @RequestBody Item updatedItem) {
+  
+      Optional<Item> updated = service.update(id, updatedItem);
+  
+      return updated
+              .map(value -> ResponseEntity.ok().body(value))
+              .orElseGet(() -> {
+                Item created = service.create(updatedItem);
+                URI location = ServletUriComponentsBuilder.fromCurrentRequest()
+                        .path("/{id}")
+                        .buildAndExpand(created.getId())
+                        .toUri();
+                return ResponseEntity.created(location).body(created);
+              });
+    }
+  
+    @DeleteMapping("/{id}")
+    @PreAuthorize("hasAuthority('delete:items')")
+    public ResponseEntity<Item> delete(@PathVariable("id") Long id) {
+      service.delete(id);
+      return ResponseEntity.noContent().build();
+    }
+  
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<Map<String, String>> handleValidationExceptions(MethodArgumentNotValidException ex) {
+      List<ObjectError> errors = ex.getBindingResult().getAllErrors();
+      Map<String, String> map = new HashMap<>(errors.size());
+      errors.forEach((error) -> {
+        String key = ((FieldError) error).getField();
+        String val = error.getDefaultMessage();
+        map.put(key, val);
+      });
+      return ResponseEntity.badRequest().body(map);
+    }
+  }
+  ```
+
+  Volveremos a ejecutar nuestra aplicación con ```gradlew bootRun``` y trataremos de crear un nuevo producto con los siguientes datos
+
+  ```
+  name: Coffee
+  price: 299
+  description: Woke
+  image: https://images.ctfassets.net/23aumh6u8s0i/6HS0xLG6bx52KJrqyqfznk/50f9350a7791fa86003024af4762f4ca/whatabyte_coffee-sm.png
+  ```
+
+  ![](/img/32.PNG)
+
+  El producto se crea de manera satisfactoria
+
+  ![](/img/33.PNG)
+
+## Desactivando nuestro tol
+
+  Saldremos de la sesión y desactivaremos nuestro RBAC desde los settings de nuestra plataforma
+
+  ![](/img/34.PNG)
+
+  Volveremos a entrar pero con nuestro usuario non-admin, esto para validar que aunque quitemos el rol, la protección de nuestra API sigue siendo estable
+
+  ![](/img/35.PNG)
+
+
+## Autor
+[Richard Santiago Urrea Garcia](https://github.com/RichardUG)
+## Licencia & Derechos de Autor
+**©** Richard Santiago Urrea Garcia, Ingeniero de Sistemas
+
+Licencia bajo la [GNU General Public License](https://github.com/RichardUG/menu-api-spring-boot-java/blob/main/LICENSE).
